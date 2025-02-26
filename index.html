@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AR Marker Model Loader</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            width: 100%;
+            text-align: center;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 5px;
+            z-index: 100;
+        }
+        #ar-button {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 12px 24px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">AR Marker Model Loader</div>
+    <button id="ar-button" class="hidden">Start AR</button>
+
+    <script type="module">
+        import * as THREE from 'https://cdnjs.cloudflare.com/ajax/libs/three.js/r132/three.module.js';
+        import { GLTFLoader } from 'https://cdn.jsdelivr.net/npm/three@0.132.2/examples/jsm/loaders/GLTFLoader.js';
+        import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.132.2/examples/jsm/webxr/ARButton.js';
+        import { ARMarkerTracker } from './js/ARMarkerTracker.js';
+
+        // Main Application Class
+        class ARMarkerModelApp {
+            constructor() {
+                this.container = document.createElement('div');
+                document.body.appendChild(this.container);
+
+                this.infoEl = document.getElementById('info');
+                this.arButton = document.getElementById('ar-button');
+
+                this.scene = new THREE.Scene();
+                this.camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 20);
+                
+                this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+                this.renderer.setPixelRatio(window.devicePixelRatio);
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.xr.enabled = true;
+                this.container.appendChild(this.renderer.domElement);
+
+                this.setupLights();
+                this.setupARSession();
+
+                // Model loader
+                this.modelLoader = new GLTFLoader();
+                
+                // Track loaded models
+                this.loadedModels = {};
+                
+                // AR marker tracker
+                this.markerTracker = new ARMarkerTracker();
+                
+                // Map markers to models
+                this.markerModelMap = {
+                    "marker1": {
+                        url: './models/1.glb',
+                        scale: 0.5
+                    },
+                    "marker2": {
+                        url: './models/2.glb',
+                        scale: 0.3
+                    },
+                    "marker3": {
+                        url: './models/3.glb',
+                        scale: 0.2
+                    }
+                };
+                
+                // Handle window resize
+                window.addEventListener('resize', this.onWindowResize.bind(this));
+                
+                // Start animation loop
+                this.renderer.setAnimationLoop(this.render.bind(this));
+            }
+            
+            setupLights() {
+                const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+                light.position.set(0.5, 1, 0.25);
+                this.scene.add(light);
+            }
+            
+            setupARSession() {
+                if (navigator.xr) {
+                    navigator.xr.isSessionSupported('immersive-ar').then(supported => {
+                        if (supported) {
+                            this.arButton.classList.remove('hidden');
+                            this.arButton.addEventListener('click', this.startAR.bind(this));
+                        } else {
+                            this.infoEl.textContent = 'WebXR AR not supported on this device';
+                        }
+                    });
+                } else {
+                    this.infoEl.textContent = 'WebXR not available in your browser';
+                }
+            }
+            
+            startAR() {
+                this.renderer.xr.getSession().then(session => {
+                    session.requestReferenceSpace('viewer').then(viewerSpace => {
+                        this.markerTracker.initialize(session, viewerSpace);
+                        
+                        // Setup marker detection
+                        this.markerTracker.onMarkerDetected = this.handleMarkerDetection.bind(this);
+                    });
+                });
+                
+                // Replace button with AR session button
+                this.arButton.replaceWith(ARButton.createButton(this.renderer, {
+                    requiredFeatures: ['hit-test'],
+                    optionalFeatures: ['dom-overlay'],
+                    domOverlay: { root: document.body }
+                }));
+            }
+            
+            handleMarkerDetection(markerId, transform) {
+                if (this.markerModelMap[markerId]) {
+                    this.loadModel(markerId, transform);
+                }
+            }
+            
+            loadModel(markerId, transform) {
+                const modelInfo = this.markerModelMap[markerId];
+                
+                // Check if model is already loaded
+                if (!this.loadedModels[markerId]) {
+                    this.infoEl.textContent = `Loading model for ${markerId}...`;
+                    
+                    this.modelLoader.load(
+                        modelInfo.url,
+                        (gltf) => {
+                            const model = gltf.scene;
+                            model.scale.set(modelInfo.scale, modelInfo.scale, modelInfo.scale);
+                            
+                            // Add model to scene
+                            this.scene.add(model);
+                            
+                            // Save reference
+                            this.loadedModels[markerId] = model;
+                            
+                            // Update model position
+                            this.updateModelPosition(markerId, transform);
+                            
+                            this.infoEl.textContent = `Displaying model for ${markerId}`;
+                        },
+                        (xhr) => {
+                            const percent = Math.floor((xhr.loaded / xhr.total) * 100);
+                            this.infoEl.textContent = `Loading ${markerId} model: ${percent}%`;
+                        },
+                        (error) => {
+                            console.error(`Error loading model for ${markerId}:`, error);
+                            this.infoEl.textContent = `Error loading model for ${markerId}`;
+                        }
+                    );
+                } else {
+                    // Model already loaded, just update position
+                    this.updateModelPosition(markerId, transform);
+                }
+            }
+            
+            updateModelPosition(markerId, transform) {
+                const model = this.loadedModels[markerId];
+                if (model) {
+                    // Apply transformation matrix from AR tracking
+                    model.matrix.fromArray(transform);
+                    model.matrix.decompose(model.position, model.quaternion, model.scale);
+                    
+                    // Ensure model is visible
+                    model.visible = true;
+                }
+            }
+            
+            hideAllModels() {
+                Object.values(this.loadedModels).forEach(model => {
+                    model.visible = false;
+                });
+            }
+            
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+            
+            render(timestamp, frame) {
+                if (frame) {
+                    // Hide all models by default
+                    this.hideAllModels();
+                    
+                    // Update marker tracking
+                    this.markerTracker.update(frame);
+                }
+                
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+        
+        // Initialize the application when the page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            const app = new ARMarkerModelApp();
+        });
+    </script>
+</body>
+</html>
